@@ -6,7 +6,8 @@ max_units; the stop trails to atr_stop_mult x ATR behind the latest add. Never a
 Exit: opposite exit_period channel break or the ATR stop.
 Risk: risk_pct is the equity risked by a fully pyramided position (measured from the entry
 stop), always a fraction of current equity, so size compounds as the account grows.
-Drawdown tiers cut risk to 50% / 25% and halt new entries at dd_halt from the equity peak.
+Drawdown tiers cut risk to 50% / 25% and pause new entries at dd_halt from the equity peak;
+after halt_cooldown bars the peak resets to current equity and trading resumes.
 Leverage: set the panel_leverage param to the same value chosen in the backtest / deployment panel.
 Total notional is capped at leverage x equity (minus a small buffer for fees).
 """
@@ -14,13 +15,13 @@ Total notional is capped at leverage x equity (minus a small buffer for fees).
 PERSIST_RUNTIME_STATE = True
 
 # @param enable_long bool true Allow long entries
-# @param enable_short bool true Allow short entries
+# @param enable_short bool false Allow short entries
 # @param entry_period int 20 Breakout channel length range=5:120:1
-# @param exit_period int 10 Exit channel length range=2:60:1
-# @param atr_period int 20 ATR period range=5:60:1
-# @param atr_stop_mult float 2.0 Stop distance in ATR range=0.5:6.0:0.25
+# @param exit_period int 60 Exit channel length range=2:60:1
+# @param atr_period int 16 ATR period range=5:60:1
+# @param atr_stop_mult float 2.5 Stop distance in ATR range=0.5:6.0:0.25
 # @param use_trend_filter bool true Only trade in the direction of the trend EMA
-# @param trend_period int 200 Trend EMA period range=50:300:10
+# @param trend_period int 110 Trend EMA period range=50:300:10
 # @param panel_leverage float 1 Must equal the leverage chosen in the backtest or deployment panel range=1:20:1
 # @param risk_pct float 0.03 Equity risked by a full position range=0.001:1.0:0.001
 # @param max_units int 3 Maximum pyramid units range=1:50:1
@@ -28,7 +29,8 @@ PERSIST_RUNTIME_STATE = True
 # @param profit_boost float 0.0 Extra risk per 100% equity growth, 0 is plain compounding range=0.0:5.0:0.1
 # @param dd_level1 float 0.10 Drawdown where risk is halved range=0.03:0.30:0.01
 # @param dd_level2 float 0.18 Drawdown where risk is quartered range=0.05:0.40:0.01
-# @param dd_halt float 0.25 Drawdown where new entries stop range=0.10:0.60:0.01
+# @param dd_halt float 0.25 Drawdown where new entries pause range=0.10:0.60:0.01
+# @param halt_cooldown int 42 Bars to pause after dd_halt before trading resumes range=0:300:6
 
 TIMEFRAME = "4h"
 # Keep a little headroom so fees and slippage do not push the order over the margin limit.
@@ -51,6 +53,8 @@ def initialize(context):
     g.n = 0.0
     g.peak_equity = 0.0
     g.halted = False
+    g.halt_until = 0
+    g.bar_count = 0
     g.leverage = 1.0
 
 
@@ -68,13 +72,13 @@ def _param(context, name, default):
 def _load_params(context):
     return {
         "enable_long": _param(context, "enable_long", True),
-        "enable_short": _param(context, "enable_short", True),
+        "enable_short": _param(context, "enable_short", False),
         "entry_period": _param(context, "entry_period", 20),
-        "exit_period": _param(context, "exit_period", 10),
-        "atr_period": _param(context, "atr_period", 20),
-        "atr_stop_mult": _param(context, "atr_stop_mult", 2.0),
+        "exit_period": _param(context, "exit_period", 60),
+        "atr_period": _param(context, "atr_period", 16),
+        "atr_stop_mult": _param(context, "atr_stop_mult", 2.5),
         "use_trend_filter": _param(context, "use_trend_filter", True),
-        "trend_period": _param(context, "trend_period", 200),
+        "trend_period": _param(context, "trend_period", 110),
         "risk_pct": _param(context, "risk_pct", 0.03),
         "max_units": _param(context, "max_units", 3),
         "add_step_atr": _param(context, "add_step_atr", 0.5),
@@ -83,6 +87,7 @@ def _load_params(context):
         "dd_level1": _param(context, "dd_level1", 0.10),
         "dd_level2": _param(context, "dd_level2", 0.18),
         "dd_halt": _param(context, "dd_halt", 0.25),
+        "halt_cooldown": _param(context, "halt_cooldown", 42),
     }
 
 
@@ -100,16 +105,26 @@ def _risk_fraction(context, p):
     if equity <= 0:
         return 0.0, 0.0
 
+    if g.halted:
+        if g.bar_count < g.halt_until:
+            return 0.0, 1.0 - equity / g.peak_equity if g.peak_equity > 0 else 0.0
+        # Cooldown finished: measure drawdown from here so trading can resume.
+        log.info("Halt cooldown finished; drawdown peak reset to %.2f" % equity)
+        g.halted = False
+        g.peak_equity = equity
+
     if equity > g.peak_equity:
         g.peak_equity = equity
     drawdown = 1.0 - equity / g.peak_equity if g.peak_equity > 0 else 0.0
 
     if drawdown >= p["dd_halt"]:
-        if not g.halted:
-            log.warning("Drawdown %.2f%% reached halt level; new entries stopped" % (drawdown * 100))
         g.halted = True
+        g.halt_until = g.bar_count + p["halt_cooldown"]
+        log.warning(
+            "Drawdown %.2f%% reached halt level; new entries paused for %d bars"
+            % (drawdown * 100, p["halt_cooldown"])
+        )
         return 0.0, drawdown
-    g.halted = False
 
     growth = max(0.0, equity / start - 1.0) if start > 0 else 0.0
     risk = p["risk_pct"] * (1.0 + p["profit_boost"] * growth)
@@ -132,6 +147,7 @@ def _submit(target_notional, side, reason, stop_loss_pct=None):
 
 def handle_data(context, data):
     p = _load_params(context)
+    g.bar_count += 1
     g.leverage = p["panel_leverage"]
     max_notional = p["panel_leverage"] * NOTIONAL_BUFFER
 
