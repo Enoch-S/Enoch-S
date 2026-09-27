@@ -1,5 +1,5 @@
 """BTC Dual EMA ATR Long
-Trades Binance BTC/USDT perpetual on 15m bars, long only.
+Trades Bybit BTC/USDT perpetual on 15m bars, long only.
 Signal: enter long when EMA20 crosses above EMA50; exit when EMA20 falls below EMA50.
 Risk: each entry risks risk_pct of equity; stop-loss is atr_mult x ATR below entry.
 Position size grows and shrinks with account equity (compounding), capped at max_weight.
@@ -15,7 +15,7 @@ No leverage, no averaging down, one position at a time.
 
 
 def initialize(context):
-    g.symbol = "Crypto:BTC/USDT@binance:swap"
+    g.symbol = "Crypto:BTC/USDT@bybit:swap"
     context.set_universe([g.symbol])
     context.subscribe(frequency="15m")
     context.set_warmup(300)
