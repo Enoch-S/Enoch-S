@@ -1,4 +1,4 @@
-# 在 Windows 上把 QuantDinger 部署到剩余空间最大的本地磁盘。
+﻿# 在 Windows 上把 QuantDinger 部署到剩余空间最大的本地磁盘。
 #
 # 用法（PowerShell）：
 #   powershell -ExecutionPolicy Bypass -File .\deploy-quantdinger.ps1
