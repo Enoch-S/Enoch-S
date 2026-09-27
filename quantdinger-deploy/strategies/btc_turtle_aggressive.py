@@ -7,7 +7,8 @@ Exit: opposite exit_period channel break or the ATR stop.
 Risk: risk_pct is the equity risked by a fully pyramided position (measured from the entry
 stop), always a fraction of current equity, so size compounds as the account grows.
 Drawdown tiers cut risk to 50% / 25% and halt new entries at dd_halt from the equity peak.
-No leverage: total notional is capped at max_weight x equity.
+Leverage: set the panel_leverage param to the same value chosen in the backtest / deployment panel.
+Total notional is capped at leverage x equity (minus a small buffer for fees).
 """
 
 PERSIST_RUNTIME_STATE = True
@@ -20,17 +21,20 @@ PERSIST_RUNTIME_STATE = True
 # @param atr_stop_mult float 2.0 Stop distance in ATR range=0.5:6.0:0.25
 # @param use_trend_filter bool true Only trade in the direction of the trend EMA
 # @param trend_period int 200 Trend EMA period range=50:300:10
-# @param risk_pct float 0.03 Equity risked by a full position range=0.005:0.05:0.005
-# @param max_units int 3 Maximum pyramid units range=1:5:1
+# @param panel_leverage float 1 Must equal the leverage chosen in the backtest or deployment panel range=1:20:1
+# @param risk_pct float 0.03 Equity risked by a full position range=0.001:1.0:0.001
+# @param max_units int 3 Maximum pyramid units range=1:50:1
 # @param add_step_atr float 0.5 Favorable move in ATR before adding a unit range=0.25:2.0:0.25
-# @param max_weight float 1.0 Maximum total notional as a fraction of equity range=0.1:1.0:0.05
-# @param profit_boost float 0.0 Extra risk per 100% equity growth, 0 is plain compounding range=0.0:1.0:0.1
-# @param max_risk_pct float 0.05 Hard cap on risk after profit_boost range=0.01:0.08:0.005
+# @param profit_boost float 0.0 Extra risk per 100% equity growth, 0 is plain compounding range=0.0:5.0:0.1
 # @param dd_level1 float 0.10 Drawdown where risk is halved range=0.03:0.30:0.01
 # @param dd_level2 float 0.18 Drawdown where risk is quartered range=0.05:0.40:0.01
 # @param dd_halt float 0.25 Drawdown where new entries stop range=0.10:0.60:0.01
 
 TIMEFRAME = "4h"
+# Highest leverage the backtest / deployment panel may select. Raise it here if needed.
+MAX_LEVERAGE = 20
+# Keep a little headroom so fees and slippage do not push the order over the margin limit.
+NOTIONAL_BUFFER = 0.95
 
 
 def initialize(context):
@@ -39,6 +43,7 @@ def initialize(context):
     context.set_benchmark(g.symbol)
     context.subscribe(frequency=TIMEFRAME)
     context.set_metadata(direction_mode="one_way")
+    context.allow_leverage(max_leverage=MAX_LEVERAGE)
     context.set_warmup(400)
     g.side = 0
     g.units = 0
@@ -47,6 +52,7 @@ def initialize(context):
     g.n = 0.0
     g.peak_equity = 0.0
     g.halted = False
+    g.leverage = 1.0
 
 
 def _param(context, name, default):
@@ -73,9 +79,8 @@ def _load_params(context):
         "risk_pct": _param(context, "risk_pct", 0.03),
         "max_units": _param(context, "max_units", 3),
         "add_step_atr": _param(context, "add_step_atr", 0.5),
-        "max_weight": _param(context, "max_weight", 1.0),
+        "panel_leverage": max(1.0, _param(context, "panel_leverage", 1.0)),
         "profit_boost": _param(context, "profit_boost", 0.0),
-        "max_risk_pct": _param(context, "max_risk_pct", 0.05),
         "dd_level1": _param(context, "dd_level1", 0.10),
         "dd_level2": _param(context, "dd_level2", 0.18),
         "dd_halt": _param(context, "dd_halt", 0.25),
@@ -109,7 +114,6 @@ def _risk_fraction(context, p):
 
     growth = max(0.0, equity / start - 1.0) if start > 0 else 0.0
     risk = p["risk_pct"] * (1.0 + p["profit_boost"] * growth)
-    risk = min(risk, p["max_risk_pct"])
 
     if drawdown >= p["dd_level2"]:
         risk *= 0.25
@@ -118,8 +122,19 @@ def _risk_fraction(context, p):
     return risk, drawdown
 
 
+def _submit(target_notional, side, reason, stop_loss_pct=None):
+    # order_target_percent is multiplied by the panel leverage, so convert notional to margin.
+    percent = target_notional * side / g.leverage
+    if stop_loss_pct is None:
+        order_target_percent(g.symbol, percent, reason=reason)
+    else:
+        order_target_percent(g.symbol, percent, reason=reason, stop_loss_pct=stop_loss_pct)
+
+
 def handle_data(context, data):
     p = _load_params(context)
+    g.leverage = p["panel_leverage"]
+    max_notional = p["panel_leverage"] * NOTIONAL_BUFFER
 
     required = max(p["entry_period"], p["exit_period"]) + 2
     required = max(required, p["atr_period"] * 3)
@@ -168,7 +183,7 @@ def handle_data(context, data):
         g.units = 1
         g.last_add_price = float(position.avg_cost or close)
         g.n = atr
-        g.unit_weight = min(abs(amount) * close / max(float(context.portfolio.total_value), 1e-9), p["max_weight"])
+        g.unit_weight = min(abs(amount) * close / max(float(context.portfolio.total_value), 1e-9), max_notional)
 
     risk, drawdown = _risk_fraction(context, p)
 
@@ -177,28 +192,24 @@ def handle_data(context, data):
         channel_exit = close < exit_low if side > 0 else close > exit_high
         stop_hit = close < stop_price if side > 0 else close > stop_price
         if channel_exit or stop_hit:
-            order_target_percent(
-                g.symbol,
-                0.0,
-                reason="turtle_exit_channel" if channel_exit else "turtle_exit_stop",
-            )
+            _submit(0.0, 1, "turtle_exit_channel" if channel_exit else "turtle_exit_stop")
             _reset_state()
             return
 
         add_trigger = g.last_add_price + side * p["add_step_atr"] * g.n
         can_add = close >= add_trigger if side > 0 else close <= add_trigger
         if can_add and g.units < p["max_units"] and not g.halted and risk > 0:
-            target = min((g.units + 1) * g.unit_weight, p["max_weight"])
+            target = min((g.units + 1) * g.unit_weight, max_notional)
             if target <= g.units * g.unit_weight + 1e-9:
                 return
             g.units += 1
             g.last_add_price = close
             new_stop = close - side * p["atr_stop_mult"] * g.n
             log.info("Add unit %d at %.2f, stop %.2f" % (g.units, close, new_stop))
-            order_target_percent(
-                g.symbol,
-                target * side,
-                reason="turtle_add_long" if side > 0 else "turtle_add_short",
+            _submit(
+                target,
+                side,
+                "turtle_add_long" if side > 0 else "turtle_add_short",
                 stop_loss_pct=abs(close - new_stop) / close,
             )
         return
@@ -215,7 +226,7 @@ def handle_data(context, data):
     stop_dist = p["atr_stop_mult"] * atr
     stop_pct = stop_dist / close
     # Size each unit so that a fully pyramided position risks about `risk` of equity.
-    full_weight = min(risk / stop_pct, p["max_weight"])
+    full_weight = min(risk / stop_pct, max_notional)
     unit_weight = full_weight / max(1, p["max_units"])
     if unit_weight <= 0:
         return
@@ -226,19 +237,20 @@ def handle_data(context, data):
     g.last_add_price = close
     g.n = atr
     log.info(
-        "Enter %s at %.2f: risk=%.2f%% dd=%.1f%% unit_weight=%.2f stop=%.2f"
+        "Enter %s at %.2f: risk=%.2f%% dd=%.1f%% notional=%.2fx leverage=%.0fx stop=%.2f"
         % (
             "long" if direction > 0 else "short",
             close,
             risk * 100,
             drawdown * 100,
             unit_weight,
+            p["panel_leverage"],
             close - direction * stop_dist,
         )
     )
-    order_target_percent(
-        g.symbol,
-        unit_weight * direction,
-        reason="turtle_breakout_long" if direction > 0 else "turtle_breakout_short",
+    _submit(
+        unit_weight,
+        direction,
+        "turtle_breakout_long" if direction > 0 else "turtle_breakout_short",
         stop_loss_pct=stop_pct,
     )
