@@ -31,8 +31,6 @@ PERSIST_RUNTIME_STATE = True
 # @param dd_halt float 0.25 Drawdown where new entries stop range=0.10:0.60:0.01
 
 TIMEFRAME = "4h"
-# Highest leverage the backtest / deployment panel may select. Raise it here if needed.
-MAX_LEVERAGE = 20
 # Keep a little headroom so fees and slippage do not push the order over the margin limit.
 NOTIONAL_BUFFER = 0.95
 
@@ -43,7 +41,8 @@ def initialize(context):
     context.set_benchmark(g.symbol)
     context.subscribe(frequency=TIMEFRAME)
     context.set_metadata(direction_mode="one_way")
-    context.allow_leverage(max_leverage=MAX_LEVERAGE)
+    # Highest leverage the panel may select. Keep it a plain number so the panel can detect it.
+    context.allow_leverage(max_leverage=20)
     context.set_warmup(400)
     g.side = 0
     g.units = 0
