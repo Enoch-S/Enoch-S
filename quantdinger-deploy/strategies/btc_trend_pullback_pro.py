@@ -32,7 +32,7 @@ PERSIST_RUNTIME_STATE = True
 # @param trailing_stop_pct float 0.0 Trailing stop percent, 0 disables range=0.0:0.10:0.005
 # @param max_hold_bars int 48 Close a trade after this many 1h bars range=6:240:6
 # @param cooldown_bars int 6 Bars to wait after a position closes range=0:48:1
-# @param validation_bars int 2000 History bars used to validate a signal range=500:2800:100
+# @param validation_bars int 1500 History bars used to validate a signal range=500:1500:100
 # @param min_samples int 20 Minimum historical signals required range=10:100:5
 # @param min_win_rate float 0.65 Minimum historical win rate range=0.50:0.90:0.01
 # @param min_expectancy float 0.05 Minimum expectancy after costs in R units range=0.0:1.0:0.05
@@ -53,7 +53,7 @@ def initialize(context):
     g.symbol = "Crypto:BTC/USDT@bybit:swap"
     context.set_universe([g.symbol])
     context.subscribe(frequency=TIMEFRAME)
-    context.set_warmup(3000)
+    context.set_warmup(1500)
     context.set_metadata(direction_mode="one_way")
     g.bar_count = 0
     g.last_exit_bar = -100000
@@ -91,7 +91,7 @@ def _load_params(context):
         "trailing_stop_pct": _param(context, "trailing_stop_pct", 0.0),
         "max_hold_bars": _param(context, "max_hold_bars", 48),
         "cooldown_bars": _param(context, "cooldown_bars", 6),
-        "validation_bars": _param(context, "validation_bars", 2000),
+        "validation_bars": _param(context, "validation_bars", 1500),
         "min_samples": _param(context, "min_samples", 20),
         "min_win_rate": _param(context, "min_win_rate", 0.65),
         "min_expectancy": _param(context, "min_expectancy", 0.05),
