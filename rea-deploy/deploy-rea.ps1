@@ -127,9 +127,9 @@ $env:Path = "$npmPrefix;$env:Path"
 # 智能体通过 npx 启动 REA 的 MCP 服务，程序会下载到 npm 缓存（默认在 C 盘）；把缓存也放到大磁盘
 $previous = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-$currentCache = & $npm config get cache 2>$null | Select-Object -First 1
+$cacheOutput = @(& $npm config get cache 2>$null)
 $ErrorActionPreference = $previous
-$currentCache = if ($currentCache) { "$currentCache".Trim() } else { "" }
+$currentCache = if ($cacheOutput.Count -gt 0 -and $cacheOutput[0]) { "$($cacheOutput[0])".Trim() } else { "" }
 $cacheOnTarget = $currentCache -and ([IO.Path]::GetPathRoot($currentCache) -eq $drive)
 
 if (-not $cacheOnTarget) {
@@ -151,9 +151,16 @@ if ($LASTEXITCODE -ne 0) { Fail "npm 安装 REA 失败，请检查网络或 npm 
 
 $rea = Join-Path $npmPrefix "rea.cmd"
 if (-not (Test-Path $rea)) { Fail "npm 未生成 rea 命令。" }
-$installedVersion = & $rea --version | Select-Object -First 1
-if ($LASTEXITCODE -ne 0) { Fail "无法运行 rea。" }
-Write-Host "REA $installedVersion 已安装到 $npmPrefix" -ForegroundColor Green
+# 不要用 Select-Object -First 截取输出：Windows PowerShell 5.1 会因此提前结束 rea 进程，导致退出码不为 0
+$ErrorActionPreference = "Continue"
+$versionOutput = @(& $rea --version 2>&1 | ForEach-Object { "$_" })
+$versionExitCode = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+if ($versionExitCode -ne 0) {
+    $versionOutput | ForEach-Object { Write-Host $_ }
+    Fail "无法运行 rea（退出码 $versionExitCode）。"
+}
+Write-Host "REA $($versionOutput[0]) 已安装到 $npmPrefix" -ForegroundColor Green
 
 # 把 rea（以及便携版 Node.js）加入用户 PATH。直接读写注册表，保留 %VAR% 形式的条目不被展开
 $pathDirs = @($npmPrefix)
