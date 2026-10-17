@@ -31,6 +31,11 @@
 
 安装位置：`<最大磁盘>:\REA`，例如 `D:\REA`。
 
+在 PowerShell 里直接输入 `rea` 会报“因为在此系统上禁止运行脚本”，这是 Windows 默认的脚本限制。
+请改用 `rea.cmd`（例如 `rea.cmd setup`），或在命令提示符（cmd）里使用 `rea`。
+如果想在 PowerShell 里直接用 `rea`，可以运行一次
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`（允许本机脚本，只对当前用户生效）。
+
 ## Linux / macOS
 
 ```bash

@@ -189,4 +189,5 @@ if ($env:REA_NO_SETUP) {
 
 Write-Host ""
 Write-Host "部署完成。安装目录：$installDir" -ForegroundColor Green
-Write-Host "新打开的终端可直接使用 rea 命令；设置完成后请重启你的智能体（如果智能体提示找不到 npx，请注销并重新登录 Windows）。"
+Write-Host "新打开的命令提示符可直接使用 rea 命令；PowerShell 默认禁止运行脚本，请输入 rea.cmd（例如 rea.cmd setup）。"
+Write-Host "设置完成后请重启你的智能体（如果智能体提示找不到 npx，请注销并重新登录 Windows）。"
